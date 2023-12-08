@@ -1,0 +1,446 @@
+//The provided code is protected by copyright and may not be reproduced or distributed without the explicit permission of the author.
+// © spekul4nt
+
+//@version=5
+
+indicator("spekul4nt | Инерционный анализ рынка", overlay=true, precision=0,
+  max_bars_back=1500, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// -- Зигзаг (фильтр рыночного шума/выделение основных движений рынка) --
+
+gr_0="1) Основные движения рынка"
+Show_Market_ZigZag = input.bool(defval=true, title = "Основные движения рынка", inline="0_1", group=gr_0)
+Depth = input(12, title='Глубина')  // Глубина     По стандарту 12
+Deviation = input(5, title='Отклонение')  // Отклонение     По стандарту 5
+LineColor = input(color.rgb(0, 64, 116), title='Цвет')  // Цвет зигзага
+
+gr_1="2) История"
+Show_Opens = input.bool(defval=true, title = "Открытие", inline="1_1", group=gr_1)
+Only_Last_Opens = input.bool(defval=true, title = "Только последнее открытие", inline="1_1", group=gr_1)
+
+Show_Sessions = input.bool(defval=true, title = "Сессии", inline="1_2", group=gr_1)
+Only_Last_Sessions = input.bool(defval=false, title = "Только последние сессии", inline="1_2", group=gr_1)
+
+Show_Days_VLines = input.bool(defval=false, title = "Дневные линии", inline="1_3", group=gr_1)
+
+// -- Линейная регрессия и фильтр по heiken ashi --
+
+gr_9="3) Линейная регрессия"
+Show_LineRegression = input.bool(defval=false, title = "Показать", inline="9_1", group=gr_9)
+
+sma_signal = input(title='Простая МА (вкл.) / Сложная МА (выкл.)', defval=true)
+lin_reg = input(title='Регрессионный фильтр', defval=true)
+linreg_length = input.int(title='Длина линейной регрессии', minval=1, maxval=200, defval=11)
+signal_length = input.int(title='Сглаживание сигнала', minval=1, maxval=200, defval=10)
+
+var bopen = 0.0
+var bhigh = 0.0
+var blow = 0.0
+var bclose = 0.0
+var r = false
+var signal = 0.0
+
+if(Show_LineRegression)
+    bopen := lin_reg ? ta.linreg(open, linreg_length, 0) : open
+    bhigh := lin_reg ? ta.linreg(high, linreg_length, 0) : high
+    blow := lin_reg ? ta.linreg(low, linreg_length, 0) : low
+    bclose := lin_reg ? ta.linreg(close, linreg_length, 0) : close
+    r := bopen < bclose
+    signal := sma_signal ? ta.sma(bclose, signal_length) : ta.ema(bclose, signal_length)
+
+plotcandle(Show_LineRegression ? (r ? bopen : na) : na, Show_LineRegression ? (r ? bhigh : na) : na, Show_LineRegression ? (r ? blow : na) : na, Show_LineRegression ? (r ? bclose : na) : na, title='Линейная регрессия Свечи', color=Show_LineRegression ? color.green : na, wickcolor=Show_LineRegression ? color.green : na, bordercolor=Show_LineRegression ? color.green : na, editable=true)
+plotcandle(Show_LineRegression ? (r ? na : bopen) : na, Show_LineRegression ? (r ? na : bhigh) : na, Show_LineRegression ? (r ? na : blow) : na, Show_LineRegression ? (r ? na : bclose) : na, title='Линейная регрессия Свечи', color=Show_LineRegression ? color.red : na, wickcolor=Show_LineRegression ? color.red : na, bordercolor=Show_LineRegression ? color.red : na, editable=true)
+plot(Show_LineRegression ? signal : na, color=color.new(#000000, 0), linewidth=2)
+
+// -- Сигнальный алгоритм --
+
+gr_10="4) Сигнальный алгоритм Buy/Sell"
+Show_SignalBot = input.bool(defval=false, title = "Показать сигналы", inline="10_1", group=gr_10)
+h = input(false, title='Показывать сигналы только с подтверждением')
+a = input.int(2, title='Чувствительность', minval=1, maxval=200, defval=2)
+c = input.int(1, title='Период АТR', minval=1, maxval=200, defval=1)
+
+xATR = ta.atr(c)
+nLoss = a * xATR
+
+src = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, lookahead=barmerge.lookahead_off) : close
+
+xATRTrailingStop = 0.0
+iff_1 = src > nz(xATRTrailingStop[1], 0) ? src - nLoss : src + nLoss
+iff_2 = src < nz(xATRTrailingStop[1], 0) and src[1] < nz(xATRTrailingStop[1], 0) ? math.min(nz(xATRTrailingStop[1]), src + nLoss) : iff_1
+xATRTrailingStop := src > nz(xATRTrailingStop[1], 0) and src[1] > nz(xATRTrailingStop[1], 0) ? math.max(nz(xATRTrailingStop[1]), src - nLoss) : iff_2
+
+pos = 0
+iff_3 = src[1] > nz(xATRTrailingStop[1], 0) and src < nz(xATRTrailingStop[1], 0) ? -1 : nz(pos[1], 0)
+pos := src[1] < nz(xATRTrailingStop[1], 0) and src > nz(xATRTrailingStop[1], 0) ? 1 : iff_3
+
+xcolor = pos == -1 ? color.red : pos == 1 ? color.green : color.blue
+
+ema = ta.ema(src, 1)
+above = ta.crossover(ema, xATRTrailingStop)
+below = ta.crossover(xATRTrailingStop, ema)
+
+buy = src > xATRTrailingStop and above
+sell = src < xATRTrailingStop and below
+
+barbuy = src > xATRTrailingStop
+barsell = src < xATRTrailingStop
+
+plotshape(Show_SignalBot ? (buy ? buy : na) : na, title='Buy', text='Buy', style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+plotshape(Show_SignalBot ? (sell ? sell : na) : na, title='Sell', text='Sell', style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+/////
+
+barcolor(barbuy ? color.green : na)
+barcolor(barsell ? color.red : na)
+
+alertcondition(buy, 'Сигнал Long', 'Внимание! Появился сигнал для покупки')
+alertcondition(sell, 'Сигнал Short', 'Внимание! Появился сигнал для продажи')
+
+// -- Разные виды открытий (неделя, день, месяц) --
+
+gr_2="Открытия"
+ULine_Width = input.int(defval=1, title = "Ширина линии", minval=0, maxval=7, step=1, group=gr_2)
+Show_Daily_Open = input.bool(defval=false, title = "Дневное открытие", inline = "2_1", group=gr_2)
+Col_Daily_Open = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_1", group=gr_2)
+Show_Weekly_Open = input.bool(defval=false, title = "Недельное открытие", inline = "2_1", group=gr_2)
+Col_Weekly_Open = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_1", group=gr_2)
+
+Show_Monthly_Open = input.bool(defval=false, title = "Месячное открытие", inline = "2_2", group=gr_2)
+Col_Monthly_Open = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_2", group=gr_2)
+Show_NewYork_Midnight = input.bool(defval=false, title = "Полночь Нью-Йорк", inline = "2_2", group=gr_2)
+Col_NewYork_Midnight = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_2", group=gr_2)
+
+Show_Previous_Daily_High = input.bool(defval=false, title = "Предыдущий дневной максимум", inline = "2_3", group=gr_2)
+Col_Previous_Daily_High = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_3", group=gr_2)
+Show_Previous_Daily_Low = input.bool(defval=false, title = "Предыдущий дневной минимум", inline = "2_3", group=gr_2)
+Col_Previous_Daily_Low = input.color(color.rgb(0, 0, 0, 0), "", inline = "2_3", group=gr_2)
+
+SLine_Width = input.int(defval=0, title = "Ширина линии сессии", minval=0, maxval=7, step=1)
+
+gr_4="Сидней"
+Show_Sydney = input.bool(defval=true, title = "СИДНЕЙ", inline="4_1", group=gr_4)
+Sydney_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="4_1", group=gr_4)
+Title_Col_Sydney = input.color(color.rgb(0, 0, 0), "Заголовок", inline="4_2", group=gr_4)
+Background_Col_Sydney = input.color(color.rgb(135, 241, 192, 80), "Заливка", inline="4_2", group=gr_4)
+
+gr_3="Азия"
+Show_Asia = input.bool(defval=true, title = "АЗИЯ", inline="3_1", group=gr_3)
+Asia_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="3_1", group=gr_3)
+Title_Col_Asia = input.color(color.rgb(0, 0, 0, 0), "Заголовок", inline="3_2", group=gr_3)
+Background_Col_Asia = input.color(color.rgb(230, 184, 0, 90), "Заливка", inline="3_2", group=gr_3)
+
+gr_8="Франкфурт"
+Show_Frankfurt = input.bool(defval=true, title = "ФРАНКФУРТ", inline="8_1", group=gr_8)
+Frankfurt_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="8_1", group=gr_8)
+Title_Col_Frankfurt = input.color(color.rgb(0, 0, 0, 0), "Заголовок", inline="8_2", group=gr_8)
+Background_Col_Frankfurt = input.color(color.rgb(204, 51, 0, 80), "Заливка", inline="8_2", group=gr_8)
+
+gr_5="Лондон"
+Show_London = input.bool(defval=true, title = "ЛОНДОН", inline="5_1", group=gr_5)
+London_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="5_1", group=gr_5)
+Title_Col_London = input.color(color.rgb(0, 0, 0, 0), "Заголовок", inline="5_2", group=gr_5)
+Background_Col_London = input.color(color.rgb(128, 170, 255, 90), "Заливка", inline="5_2", group=gr_5)
+
+gr_6="Нью-Йорк"
+Show_NewYork = input.bool(defval=true, title = "НЬЮ-ЙОРК", inline="6_1", group=gr_6)
+NewYork_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="6_1", group=gr_6)
+Title_Col_NewYork = input.color(color.rgb(0, 0, 0, 0), "Заголовок", inline="6_2", group=gr_6)
+Background_Col_NewYork = input.color(color.rgb(179,102,255, 90), "Заливка", inline="6_2", group=gr_6)
+
+gr_7="Дневной диапазон Центрального банка"
+Show_CBDR = input.bool(defval=true, title = "ДДЦБ (CBDR)", inline="7_1", group=gr_7)
+CBDR_Display = input.string(defval="Filled Box", title = "", options=["Border", "Filled Box"], inline="7_1", group=gr_7)
+Title_Col_CBDR = input.color(color.rgb(0, 0, 0, 0), "Заголовок", inline="7_2", group=gr_7)
+Background_Col_CBDR = input.color(color.rgb(255,102,102, 90), "Заливка", inline="7_2", group=gr_7)
+
+// ----- Доп. -----
+
+__Get_Price_At_Midnight(Timezone="America/New_York") =>
+    var float res_open = na
+    session_str = "0000-0000:1234567"    // Воскресенье до субботы
+    if time("D", session_str, Timezone) != time("D", session_str, Timezone)[1]
+        res_open := open
+    res_open
+
+Get_Price_At_Midnight(Timezone="America/New_York") =>
+    float Midnight_Price = request.security(syminfo.tickerid, "60", __Get_Price_At_Midnight(Timezone),
+      gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+    Midnight_Price
+
+Session_Range_Info(Range="0800-1600", Timezone="America/New_York") =>
+    time_val = time("1", Range, Timezone)
+    in_range = not na(time_val) ? true : false
+    is_begin = in_range and na(time("1", Range, Timezone)[1])
+    [in_range, is_begin, time_val]
+
+Draw_Label(XLoc, YPrice, Text, TColor) =>
+    nlabel = label.new(x=XLoc, y=YPrice, text=Text, textcolor=TColor, size=size.normal,
+      xloc=xloc.bar_time, yloc=yloc.price, text_font_family=font.family_monospace, style=label.style_none, textalign=text.align_center)
+    nlabel
+
+// ----- Основные движения рынка -----
+lastlow = 0.0
+lasthigh = 0.0
+lastlow := nz(lastlow[1])
+lasthigh := nz(lasthigh[1])
+
+data(x) =>
+    d = request.security(syminfo.tickerid, timeframe.period, x)
+    d
+getLow(x, y, z, a) =>
+    lastlow = y
+    v = data(x)
+    m = v == lastlow or data(z) - v > a * syminfo.mintick
+    if v != lastlow
+        lastlow := v
+        lastlow
+    if m
+        v := 0.0
+        v
+    [v, lastlow]
+getHigh(x, y, z, a) =>
+    lasthigh = y
+    v = data(x)
+    m = v == lasthigh or v - data(z) > a * syminfo.mintick
+    if v != lasthigh
+        lasthigh := v
+        lasthigh
+    if m
+        v := 0.0
+        v
+    [v, lasthigh]
+
+[v, e] = getLow(ta.lowest(Depth), lastlow, low, Deviation)
+lastlow := e
+zBB = v != 0.0
+[v1, e1] = getHigh(ta.highest(Depth), lasthigh, high, Deviation)
+lasthigh := e1
+zSS = v1 != 0.0
+
+zigzagDirection = -1
+zigzagHigh = 0
+zigzagLow = 0
+zigzagDirection := zBB ? 0 : zSS ? 1 : nz(zigzagDirection[1], -1)
+virtualLow = zigzagLow[1] + 1
+if not zBB or zBB and zigzagDirection == zigzagDirection[1] and low > low[virtualLow]
+    zigzagLow := nz(zigzagLow[1]) + 1
+    zigzagLow
+virtualHigh = zigzagHigh[1] + 1
+if not zSS or zSS and zigzagDirection == zigzagDirection[1] and high < high[virtualHigh]
+    zigzagHigh := nz(zigzagHigh[1]) + 1
+    zigzagHigh
+
+if Show_Market_ZigZag
+    line zigzag = line.new(bar_index - zigzagLow, low[zigzagLow], bar_index - zigzagHigh, high[zigzagHigh], color=LineColor, width=3)
+    if zigzagDirection == zigzagDirection[1]
+        line.delete(zigzag[1])
+
+// ----- Расчеты и показ линий открытия -----
+float Daily_Open = Show_Opens and Show_Daily_Open ? request.security(syminfo.tickerid, "D", open, lookahead=barmerge.lookahead_on) : na
+float Weekly_Open = Show_Opens and Show_Weekly_Open ? request.security(syminfo.tickerid, "W", open, lookahead=barmerge.lookahead_on) : na
+float Monthly_Open = Show_Opens and Show_Monthly_Open ? request.security(syminfo.tickerid, "M", open, lookahead=barmerge.lookahead_on) : na
+float NewYork_Midnight = Show_Opens and Show_NewYork_Midnight ? Get_Price_At_Midnight("America/New_York") : na
+float Previous_Daily_High = Show_Opens and Show_Previous_Daily_High ? request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on) : na
+float Previous_Daily_Low = Show_Opens and Show_Previous_Daily_Low ? request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on) : na
+
+Draw_Part_Line(XStart, XEnd, YPrice, Text, LColor, LWidth) =>
+    line.new(x1=XStart, y1=YPrice, x2=XEnd, y2=YPrice, xloc=xloc.bar_time, color=LColor, width=LWidth, style=line.style_solid)
+    Draw_Label(XEnd, YPrice, Text, LColor)
+
+// -- Дневное_Открытие --
+if ta.change(Daily_Open, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 24 * 3600 * 1000 //  24 hours
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, Daily_Open, "DO", Col_Daily_Open, ULine_Width)
+
+// -- Недельное открытие --
+if ta.change(Weekly_Open, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 7 * 24 * 3600 * 1000 //  7 days
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, Weekly_Open, "WO", Col_Weekly_Open, ULine_Width)
+
+// -- Месячное_Открытие --
+if ta.change(Monthly_Open, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 30 * 24 * 3600 * 1000 //  30 days
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, Monthly_Open, "MO", Col_Monthly_Open, ULine_Width)
+
+// ----- Расчет и показ NYM -----
+if ta.change(NewYork_Midnight, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 24 * 3600 * 1000 //  24 часа
+
+    if not na(time("1", "1700-1800:1", "America/New_York"))
+        XEnd := XStart + 7 * 3600 * 1000 //  7 часов
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, NewYork_Midnight, "NYM", Col_NewYork_Midnight, ULine_Width)
+
+// ----- Предыдущий дневной максимум -----
+if ta.change(Previous_Daily_High, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 24 * 3600 * 1000 //  24 hours
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, Previous_Daily_High, "PDH", Col_Previous_Daily_High, ULine_Width)
+
+// ----- Предыдущий дневной минимум -----
+if ta.change(Previous_Daily_Low, 1) != 0
+    XStart = time(timeframe.period, "0000-0000:1234567")
+    XEnd = XStart + 24 * 3600 * 1000 //  24 hours
+
+    is_last_line = last_bar_time - XEnd < 3600 * 1000 // меньше 1 часа
+    is_draw = Only_Last_Opens ? is_last_line : true
+    if is_draw
+        Draw_Part_Line(XStart, XEnd, Previous_Daily_Low, "PDL", Col_Previous_Daily_Low, ULine_Width)
+
+// ----- Расчет и показ сессий -----
+arr_count = 8
+var float[] CHigh_Arr = array.new_float(arr_count)
+var float[] CLow_Arr = array.new_float(arr_count)
+var box[] Box_Arr = array.new_box(arr_count)
+var label[] Label_Arr = array.new_label(arr_count)
+var bool[] InRange_Arr = array.new_bool(arr_count)
+
+Session_Draw(SLabel="London", Session_Range="0700-1600", HoursDur=9, Timezone="Greenwich", CI=0,
+  Display_Type="Border", SLine_Width=2, Title_Col=color.maroon, Background_Col=color.aqua) =>
+    [in_range, is_begin, time_val] = Session_Range_Info(Session_Range, Timezone)
+    array.set(InRange_Arr, CI, in_range)
+
+    if is_begin
+        end_time = time_val + (HoursDur - 1) * 3600 * 1000    // тут продолжительность в часах
+        is_last_box = last_bar_time - time_val < 24 * 3600 * 1000 // меньше 24 часов
+        is_draw = Only_Last_Sessions ? is_last_box : true
+
+        if is_draw
+            array.set(CHigh_Arr, CI, high)
+            array.set(CLow_Arr, CI, low)
+
+            NLabel = Draw_Label(time_val + (HoursDur / 2) * 3600 * 1000, high * 1.005, SLabel, Title_Col)
+            array.set(Label_Arr, CI, NLabel)
+
+            bg_color = Background_Col   
+            if Display_Type == "Border"
+                bg_color := color.new(Background_Col, 100)
+
+            NBox = box.new(time_val, high * 1.001, end_time, low * 0.999, xloc=xloc.bar_time,
+              border_color=Title_Col, border_width=SLine_Width, border_style=line.style_solid, bgcolor=bg_color)
+            array.set(Box_Arr, CI, NBox)
+
+        else
+            array.set(CHigh_Arr, CI, na)
+            array.set(CLow_Arr, CI, na)
+            array.set(Label_Arr, CI, na)
+            array.set(Box_Arr, CI, na)
+
+    if in_range and not is_begin
+        Cur_High = array.get(CHigh_Arr, CI)
+        ncHigh = math.max(high, Cur_High)
+        array.set(CHigh_Arr, CI, ncHigh)
+
+        Cur_Low = array.get(CLow_Arr, CI)
+        ncLow = math.min(low, Cur_Low)
+        array.set(CLow_Arr, CI, ncLow)
+
+        Cur_Label = array.get(Label_Arr, CI)
+        label.set_y(Cur_Label, ncHigh)
+
+        Cur_Box = array.get(Box_Arr, CI)
+        box.set_top(Cur_Box, ncHigh)
+        box.set_bottom(Cur_Box, ncLow)
+
+// ----- Сидней, AEDT, UTC +11, with DST -----
+if Show_Sessions and Show_Sydney
+    Session_Draw("Sydney", "0700-1600", 9, "Australia/Sydney", 0, Sydney_Display, SLine_Width, Title_Col_Sydney, Background_Col_Sydney)
+
+// ----- Азия, JST, UTC +9, not DST -----
+if Show_Sessions and Show_Asia
+    Session_Draw("Asia", "0800-1700", 9, "Asia/Tokyo", 1, Asia_Display, SLine_Width, Title_Col_Asia, Background_Col_Asia)
+
+// ----- Лондон, GMT, UTC +0, not DST -----
+if Show_Sessions and Show_London
+    Session_Draw("London", "0700-1600", 9, "Greenwich", 2, London_Display, SLine_Width, Title_Col_London, Background_Col_London)
+
+// ----- Нью-Йорк, EDT, UTC -4, with DST -----
+if Show_Sessions and Show_NewYork
+    Session_Draw("New York", "0800-1700", 9, "America/New_York", 3, NewYork_Display, SLine_Width, Title_Col_NewYork, Background_Col_NewYork)
+
+// ----- Дневной диапазон Центрального банка -----
+if Show_Sessions and Show_CBDR
+    Session_Draw("CBDR", "2000-0000", 4, "Greenwich", 4, CBDR_Display, SLine_Width, Title_Col_CBDR, Background_Col_CBDR)
+
+// // ----- Франкфурт-----
+if Show_Sessions and Show_Frankfurt
+    Session_Draw("Frankfurt", "0200-0300", 2, "America/New_York", 5, Frankfurt_Display, SLine_Width, Title_Col_Frankfurt, Background_Col_Frankfurt)
+
+// // ----- Гонг-Конг -----
+// if Show_Sessions and Show_HongKong
+//     Session_Draw("Hong Kong", "0100-1000", 9, "Asia/Hong_Kong", 5, HongKong_Display, SLine_Width, Title_Col_HongKong, Background_Col_HongKong)
+//
+// // ----- Сингапур -----
+// if Show_Sessions and Show_Singapore
+//     Session_Draw("Singapore", "0100-1000", 9, "Asia/Singapore", 6, Singapore_Display, SLine_Width, Title_Col_Singapore, Background_Col_Singapore)
+
+
+
+// ----- Показ дней -----
+dd_ses_str = "0000-0000:1234567"
+dd_tz = syminfo.timezone
+newDay = ta.change(time("D", dd_ses_str, syminfo.timezone))
+LineLengthMult = 100
+LineLength = ta.atr(100) * LineLengthMult
+bgPlot2 = time(timeframe.period)
+
+isMon() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.monday ? 1 : 0
+isTue() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.tuesday ? 1 : 0
+isWed() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.wednesday ? 1 : 0
+isThu() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.thursday ? 1 : 0
+isFri() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.friday ? 1 : 0
+isSat() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.saturday ? 1 : 0
+isSun() => dayofweek(time("D", dd_ses_str, dd_tz), dd_tz) == dayofweek.sunday ? 1 : 0
+
+txtMon = "П\no\nн\nе\nд\nе\nл\nь\nн\nи\nк"
+txtTue = "В\nт\nо\nр\nн\nи\nк"
+txtWed = "С\nр\nе\nд\nа"
+txtThu = "Ч\nе\nт\nв\nе\nр\nг"
+txtFri = "П\nя\nт\nн\nи\nц\nа"
+txtSat = "С\nу\nб\nб\nо\nт\nа"
+txtSun = "В\nо\nс\nк\nр\nе\nс\nе\nн\nь\nе"
+
+drawVerticalLine(offset, cond) =>
+    if cond
+        line.new(bar_index[offset], low-LineLength, bar_index[offset], high+LineLength,
+          color=color.new(color.black, 40), width=1)
+
+// Plot Char, linii
+plotchar(Show_Days_VLines and newDay and isMon(), "Mon", "", location.bottom, color.black, size = size.tiny, text = txtMon, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isTue(), "Tue", "", location.bottom, color.black, size = size.tiny, text = txtTue, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isWed(), "Wed", "", location.bottom, color.black, size = size.tiny, text = txtWed, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isThu(), "Thu", "", location.bottom, color.black, size = size.tiny, text = txtThu, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isFri(), "Fri", "", location.bottom, color.black, size = size.tiny, text = txtFri, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isSat(), "Sat", "", location.bottom, color.black, size = size.tiny, text = txtSat, offset=2, editable=false, display=display.all - display.status_line)
+plotchar(Show_Days_VLines and newDay and isSun(), "Sun", "", location.bottom, color.black, size = size.tiny, text = txtSun, offset=2, editable=false, display=display.all - display.status_line)
+
+drawVerticalLine(0, Show_Days_VLines and newDay and isMon())
+drawVerticalLine(0, Show_Days_VLines and newDay and isTue())
+drawVerticalLine(0, Show_Days_VLines and newDay and isWed())
+drawVerticalLine(0, Show_Days_VLines and newDay and isThu())
+drawVerticalLine(0, Show_Days_VLines and newDay and isFri())
+drawVerticalLine(0, Show_Days_VLines and newDay and isSat())
+drawVerticalLine(0, Show_Days_VLines and newDay and isSun())
