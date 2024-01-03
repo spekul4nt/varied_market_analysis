@@ -3,7 +3,7 @@
 
 //@version=5
 
-indicator("spekul4nt | Инерционный анализ рынка", overlay=true, precision=0,
+indicator("spekul4nt | Вариативный анализ рынка", overlay=true, precision=0,
   max_bars_back=1500, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
 
 // -- Зигзаг (фильтр рыночного шума/выделение основных движений рынка) --
